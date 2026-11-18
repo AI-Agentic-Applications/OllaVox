@@ -1,4 +1,3 @@
-
 "use strict";
 const $=id=>document.getElementById(id);
 const DEFAULTS={provider:"ollama",baseUrl:"http://localhost:11434",model:"",temperature:.7,contextSize:4096,
@@ -107,38 +106,16 @@ const SpeechEngine={
   this.voices().forEach(v=>{const o=document.createElement("option");o.value=v.name;o.textContent=v.name+" ("+v.lang+")";sel.appendChild(o)});
   if(state.prefs.voice)sel.value=state.prefs.voice;
  },
-  normalize(t){return (t||"").toLowerCase().replace(/[^a-z0-9 ]/g,"").replace(/\s+/g," ").trim()},
-  isEcho(t){
-   const a=this.normalize(t),b=this.normalize(state.lastSpoken);
-   if(!a||!b||Date.now()>state.echoGuardUntil)return false;
-   if(a===b)return true;
-   const aw=a.split(" "),bw=b.split(" ");
-   const overlap=aw.filter(w=>bw.includes(w)).length;
-   return aw.length>=2&&overlap/Math.max(aw.length,bw.length)>=.65;
-  },
-  queueTurn(text){
-   state.pendingTurn=(state.pendingTurn?state.pendingTurn+" ":"")+text;
-   clearTimeout(state.turnTimer);
-   state.turnTimer=setTimeout(()=>{
-    const turn=state.pendingTurn.trim();state.pendingTurn="";
-    if(!turn)return;
-    if(state.speaking||state.generating){
-     if(!state.prefs.autoBargeIn){UIRenderer.toast("Waiting for assistant to finish");return}
-     BargeInController.interrupt();
-     setTimeout(()=>App.send(turn),180);
-    } else App.send(turn);
-   },1100);
-  },
-  speak(text){
+ speak(text){
   if(state.muted||!text.trim()||!("speechSynthesis" in window))return;
   const u=new SpeechSynthesisUtterance(text);
   const v=this.voices().find(x=>x.name===state.prefs.voice);if(v)u.voice=v;
   u.rate=Number(state.prefs.speechRate)||1;
-  state.lastSpoken=text;state.echoGuardUntil=Date.now()+Math.max(2500,text.length*75);
-  u.onstart=()=>{state.speaking=true;UIRenderer.pill("Speaking")};
-  u.onend=()=>{state.speaking=false;if(!state.generating)UIRenderer.pill("")};
+ state.lastSpoken=text;state.echoGuardUntil=Date.now()+Math.max(2500,text.length*75);
+    u.onstart=()=>{state.speaking=true;UIRenderer.pill("Speaking")};
+  u.onend=()=>{state.speaking=false;state.echoGuardUntil=Date.now()+700;if(!state.generating)UIRenderer.pill("")};
   u.onerror=()=>{state.speaking=false};
-  speechSynthesis.speak(u);
+    speechSynthesis.speak(u);
  },
  flushTTS(full){
   const parts=full.split(/(?<=[.!?])\s+|\n+/).filter(Boolean);
@@ -158,9 +135,14 @@ const SpeechEngine={
    for(let i=e.resultIndex;i<e.results.length;i++){
     const res=e.results[i];if(res.isFinal)final+=res[0].transcript;else interim+=res[0].transcript;
    }
+  if(state.speaking){
+    $("prompt").value="";
+    if(final&&BargeInController.isStopCommand(final)){BargeInController.interrupt();UIRenderer.toast("Interrupted")}
+    return;
+   }
    if(interim){
     $("prompt").value=interim;
-    if(state.prefs.autoBargeIn&&(state.speaking||state.generating)&&!SpeechEngine.isEcho(interim)&&interim.trim().split(/\s+/).length>=2)
+    if(state.prefs.autoBargeIn&&state.generating&&!SpeechEngine.isEcho(interim)&&interim.trim().split(/\s+/).length>=2)
       BargeInController.interrupt();
    }
    if(final){
@@ -198,12 +180,14 @@ const SpeechEngine={
     state.voskRecognizer.on("result",e=>{
      const text=(e.result?.text||"").trim();if(!text)return;
      if(BargeInController.isStopCommand(text)){BargeInController.interrupt();UIRenderer.toast("Interrupted");return}
-     if(SpeechEngine.isEcho(text)){UIRenderer.toast("Ignored possible microphone echo");return}
+      if(SpeechEngine.isEcho(text)){UIRenderer.toast("Ignored possible microphone echo");return}
      SpeechEngine.queueTurn(text);
     });
     state.voskRecognizer.on("partialresult",e=>{
-     const t=e.result?.partial||"";$("prompt").value=t;
-     if(t&&state.prefs.autoBargeIn&&(state.speaking||state.generating))BargeInController.interrupt();
+     const t=e.result?.partial||"";
+     if(state.speaking){$("prompt").value="";return}
+     $("prompt").value=t;
+     if(t&&state.prefs.autoBargeIn&&state.generating)BargeInController.interrupt();
     });
     state.processor.onaudioprocess=ev=>{try{state.voskRecognizer.acceptWaveform(ev.inputBuffer)}catch(e){}};
     source.connect(state.processor);state.processor.connect(state.audioContext.destination);
