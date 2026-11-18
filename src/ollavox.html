@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OllaVox — Offline-First Local LLM Voice Chat</title>
+<link rel="stylesheet" href="public/static/css/main.css" />
+</head>
+<body>
+<div id="bgLayer"></div><div id="bgOverlay"></div>
+<div class="app">
+<header>
+  <div class="logo"><span>◉</span>OllaVox</div>
+  <select id="provider"><option value="ollama">Ollama</option><option value="lmstudio">LM Studio</option></select>
+  <select id="modelSelect"><option value="">Select model…</option></select>
+  <span id="ctxBadge">0 / 4096</span>
+  <div class="status"><span id="statusDot" class="dot"></span><span id="statusText">Disconnected</span></div>
+  <button id="settingsBtn" class="icon" title="Settings">⚙</button>
+</header>
+<main id="chat"></main>
+<div id="statusPill"></div>
+<footer>
+  <div class="inputRow">
+    <button id="micBtn" class="icon" title="Push to talk">🎤</button>
+    <button id="continuousBtn" class="icon" title="Hands-free continuous listening">♾</button>
+    <textarea id="prompt" rows="1" placeholder="Message your local model…"></textarea>
+    <button id="sendBtn" class="primary">Send</button>
+    <button id="stopBtn" class="icon" title="Stop generation / speech">■</button>
+    <button id="muteBtn" class="icon" title="Mute AI voice">🔊</button>
+  </div>
+  <div class="notice"><div class="wave off" id="wave"><i></i><i></i><i></i><i></i></div><span id="headphoneNotice">Use headphones in hands-free mode to avoid speaker-to-mic self-interruption.</span></div>
+</footer>
+</div>
+
+<div id="drawer"><div class="scrim" id="drawerScrim"></div><div class="panel">
+  <div class="row"><h3 style="flex:1">Settings</h3><button id="closeSettings">✕</button></div>
+  <h3>API & context</h3>
+  <div class="field"><label>Base URL</label><input id="baseUrl" type="url"></div>
+  <div class="field"><label>Temperature: <span id="tempVal"></span></label><input id="temperature" type="range" min="0" max="2" step="0.05"></div>
+  <div class="field"><label>Context size (num_ctx)</label><select id="contextSize"><option>2048</option><option>4096</option><option>8192</option><option>16384</option><option>32768</option><option value="custom">Custom…</option></select><input id="customContext" type="number" min="256" placeholder="Custom context size" style="display:none;margin-top:6px;width:100%"></div>
+  <div id="corsTip">Local request blocked. For Ollama set <code>OLLAMA_ORIGINS="*"</code>; in LM Studio enable CORS in its server settings.</div>
+  <h3>System prompt</h3>
+  <div class="row" style="margin-bottom:7px"><button data-persona="You are OllaVox, a concise, friendly voice assistant. Answer clearly and naturally.">Default</button><button data-persona="You are a precise technical assistant. Prefer concise, accurate answers.">Technical</button><button data-persona="You are a warm, encouraging creative collaborator.">Creative</button></div>
+  <textarea id="systemPrompt" rows="5"></textarea>
+  <h3>Voice & interruption</h3>
+  <div class="field"><label>Speech recognition</label><select id="sttEngine"><option value="native">Native Web Speech API</option><option value="vosk">Offline Vosk-Browser</option></select></div>
+  <div class="field"><label>Vosk model (.zip) — optional local file</label><input id="voskModel" type="file" accept=".zip"></div>
+  <div class="field"><label>TTS voice</label><select id="voiceSelect"></select></div>
+  <div class="field"><label>Speech rate: <span id="rateVal"></span></label><input id="speechRate" type="range" min="0.5" max="2" step="0.05"></div>
+  <div class="switch"><span>Auto-barge-in on voice activity</span><input id="autoBargeIn" type="checkbox"></div>
+  <div class="field"><label>Custom stop commands (comma-separated)</label><input id="stopCommands" type="text"></div>
+  <h3>Appearance</h3>
+  <div class="field"><label>Theme</label><select id="theme"><option value="midnight">Midnight Dark</option><option value="oled">OLED Black</option><option value="slate">Slate Light</option><option value="terminal">Terminal Green</option></select></div>
+  <div class="field"><label>Custom background color</label><input id="bgColor" type="color"></div>
+  <div class="field"><label>Background image URL</label><input id="bgImage" type="url" placeholder="https://…"></div>
+  <button id="resetPrefs" class="primary" style="width:100%">Reset to defaults</button>
+</div></div>
+<div id="toast"></div>
+
+<script src="public/static/js/app.js" defer></script>
+</body>
+</html>
