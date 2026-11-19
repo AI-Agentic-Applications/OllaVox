@@ -1,4 +1,3 @@
-
 "use strict";
 const $=id=>document.getElementById(id);
 const DEFAULTS={provider:"ollama",baseUrl:"http://localhost:11434",model:"",temperature:.7,contextSize:4096,
@@ -87,129 +86,295 @@ const UIRenderer={
  badge(){$("ctxBadge").textContent=ContextManager.total()+" / "+(Number(state.prefs.contextSize)||4096)+" tokens"},
  status(cls,text){$("statusDot").className="dot "+cls;$("statusText").textContent=text}
 };
-const BargeInController={
- interrupt(){
-  window.speechSynthesis.cancel();state.speaking=false;state.ttsQueue="";
-  if(state.abortController){state.abortController.abort();state.abortController=null}
-  state.generating=false;clearTimeout(state.turnTimer);state.pendingTurn="";UIRenderer.pill("");UIRenderer.status("warn","Interrupted");
-  setTimeout(()=>{if(!state.listening)UIRenderer.status(state.prefs.model?"ok":"warn",state.prefs.model?"Ready":"Disconnected")},900);
+const BargeInController = {
+ interrupt() {
+  window.speechSynthesis.cancel();
+  state.speaking = false;
+  state.ttsQueue = "";
+  if (state.abortController) {
+   state.abortController.abort();
+   state.abortController = null;
+  }
+  state.generating = false;
+  clearTimeout(state.turnTimer);
+  state.pendingTurn = "";
+  UIRenderer.pill("");
+  UIRenderer.status("warn", "Interrupted");
+  setTimeout(() => {
+   if (!state.listening) {
+    UIRenderer.status(state.prefs.model ? "ok" : "warn", state.prefs.model ? "Ready" : "Disconnected");
+   }
+  }, 900);
  },
- isStopCommand(t){
-  const norm=t.trim().toLowerCase().replace(/[.,!?]/g,"").replace(/\s+/g," ");
-  const stops=state.prefs.stopCommands.split(",").map(x=>x.trim().toLowerCase()).filter(Boolean);
-  return stops.some(s=>norm===s||norm.startsWith(s+" ")||norm.endsWith(" "+s));
+ isStopCommand(t) {
+  const norm = t.trim().toLowerCase().replace(/[.,!?]/g, "").replace(/\s+/g, " ");
+  const stops = state.prefs.stopCommands.split(",").map(x => x.trim().toLowerCase()).filter(Boolean);
+  return stops.some(s => norm === s || norm.startsWith(s + " ") || norm.endsWith(" " + s));
  }
 };
-const SpeechEngine={
- voices(){return window.speechSynthesis?.getVoices?.()||[]},
- populateVoices(){
-  const sel=$("voiceSelect");sel.innerHTML='<option value="">System default</option>';
-  this.voices().forEach(v=>{const o=document.createElement("option");o.value=v.name;o.textContent=v.name+" ("+v.lang+")";sel.appendChild(o)});
-  if(state.prefs.voice)sel.value=state.prefs.voice;
+
+const SpeechEngine = {
+ voices() { return window.speechSynthesis?.getVoices?.() || []; },
+ populateVoices() {
+  const sel = $("voiceSelect");
+  sel.innerHTML = '<option value="">System default</option>';
+  this.voices().forEach(v => {
+   const o = document.createElement("option");
+   o.value = v.name;
+   o.textContent = v.name + " (" + v.lang + ")";
+   sel.appendChild(o);
+  });
+  if (state.prefs.voice) sel.value = state.prefs.voice;
  },
-  normalize(t){return (t||"").toLowerCase().replace(/[^a-z0-9 ]/g,"").replace(/\s+/g," ").trim()},
-  isEcho(t){
-   const a=this.normalize(t),b=this.normalize(state.lastSpoken);
-   if(!a||!b||Date.now()>state.echoGuardUntil)return false;
-   if(a===b)return true;
-   const aw=a.split(" "),bw=b.split(" ");
-   const overlap=aw.filter(w=>bw.includes(w)).length;
-   return aw.length>=2&&overlap/Math.max(aw.length,bw.length)>=.65;
-  },
-  queueTurn(text){
-   state.pendingTurn=(state.pendingTurn?state.pendingTurn+" ":"")+text;
-   clearTimeout(state.turnTimer);
-   state.turnTimer=setTimeout(()=>{
-    const turn=state.pendingTurn.trim();state.pendingTurn="";
-    if(!turn)return;
-    if(state.speaking||state.generating){
-     if(!state.prefs.autoBargeIn){UIRenderer.toast("Waiting for assistant to finish");return}
-     BargeInController.interrupt();
-     setTimeout(()=>App.send(turn),180);
-    } else App.send(turn);
-   },1100);
-  },
-  speak(text){
-  if(state.muted||!text.trim()||!("speechSynthesis" in window))return;
-  const u=new SpeechSynthesisUtterance(text);
-  const v=this.voices().find(x=>x.name===state.prefs.voice);if(v)u.voice=v;
-  u.rate=Number(state.prefs.speechRate)||1;
-  state.lastSpoken=text;state.echoGuardUntil=Date.now()+Math.max(2500,text.length*75);
-  u.onstart=()=>{state.speaking=true;UIRenderer.pill("Speaking")};
-  u.onend=()=>{state.speaking=false;if(!state.generating)UIRenderer.pill("")};
-  u.onerror=()=>{state.speaking=false};
+ normalize(t) {
+  return (t || "").toLowerCase().replace(/[^a-z0-9 ]/g, "").replace(/\s+/g, " ").trim();
+ },
+ isEchoGuardActive() {
+  return state.speaking || window.speechSynthesis.speaking || window.speechSynthesis.pending || Date.now() < state.echoGuardUntil;
+ },
+ isEcho(t) {
+  const heard = this.normalize(t);
+  const spoken = this.normalize(state.lastSpoken);
+  if (!heard || !spoken || !this.isEchoGuardActive()) return false;
+
+  // 1. Direct substring match (e.g. mic caught a fragment of TTS output)
+  if (heard.length >= 4 && spoken.includes(heard)) return true;
+
+  // 2. Word overlap ratio based on HEARD words (not total spoken words)
+  const aw = heard.split(" ").filter(w => w.length > 2);
+  const bw = new Set(spoken.split(" "));
+  if (aw.length === 0) return true; // Ignore tiny 1-2 letter mic glitches during echo guard
+
+  const overlap = aw.filter(w => bw.has(w)).length;
+  return (overlap / aw.length) >= 0.45; // 45%+ word match with recent TTS = self-echo
+ },
+ queueTurn(text) {
+  if (this.isEcho(text)) {
+   UIRenderer.toast("Ignored self-echo");
+   return;
+  }
+  state.pendingTurn = (state.pendingTurn ? state.pendingTurn + " " : "") + text;
+  clearTimeout(state.turnTimer);
+  state.turnTimer = setTimeout(() => {
+   const turn = state.pendingTurn.trim();
+   state.pendingTurn = "";
+   if (!turn || this.isEcho(turn)) return;
+
+   if (this.isEchoGuardActive() || state.generating) {
+    if (!state.prefs.autoBargeIn) {
+     UIRenderer.toast("Waiting for assistant to finish");
+     return;
+    }
+    BargeInController.interrupt();
+    setTimeout(() => App.send(turn), 180);
+   } else {
+    App.send(turn);
+   }
+  }, 1100);
+ },
+ speak(text) {
+  const cleanText = MarkdownParser.plain(text).trim();
+  if (state.muted || !cleanText || !("speechSynthesis" in window)) return;
+
+  const u = new SpeechSynthesisUtterance(cleanText);
+  const v = this.voices().find(x => x.name === state.prefs.voice);
+  if (v) u.voice = v;
+  u.rate = Number(state.prefs.speechRate) || 1;
+
+  // Keep a rolling 800-char history of spoken text so multi-sentence replies don't overwrite each other
+  state.lastSpoken = ((state.lastSpoken || "") + " " + cleanText).slice(-800);
+  state.echoGuardUntil = Date.now() + Math.max(3500, cleanText.length * 90);
+
+  u.onstart = () => {
+   state.speaking = true;
+   UIRenderer.pill("Speaking");
+  };
+  const finishUtterance = () => {
+   // Only clear speaking state when the entire TTS queue has finished
+   if (!window.speechSynthesis.speaking && !window.speechSynthesis.pending) {
+    state.speaking = false;
+    state.echoGuardUntil = Date.now() + 1200; // 1.2s cooldown for trailing room echo & STT buffer flush
+    if (!state.generating) UIRenderer.pill("");
+   }
+  };
+  u.onend = finishUtterance;
+  u.onerror = finishUtterance;
   speechSynthesis.speak(u);
  },
- flushTTS(full){
-  const parts=full.split(/(?<=[.!?])\s+|\n+/).filter(Boolean);
-  const speakable=parts.slice(0,-1).join(" ");
-  if(speakable){this.speak(speakable);return parts[parts.length-1]}
+ flushTTS(full) {
+  const parts = full.split(/(?<=[.!?])\s+|\n+/).filter(Boolean);
+  const speakable = parts.slice(0, -1).join(" ");
+  if (speakable) {
+   this.speak(speakable);
+   return parts[parts.length - 1];
+  }
   return full;
  },
- nativeSupported(){return !!(window.SpeechRecognition||window.webkitSpeechRecognition)},
- startNative(continuous){
-  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-  if(!SR){UIRenderer.toast("Native speech recognition unavailable; use Vosk");return false}
+ nativeSupported() { return !!(window.SpeechRecognition || window.webkitSpeechRecognition); },
+ startNative(continuous) {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { UIRenderer.toast("Native speech recognition unavailable; use Vosk"); return false; }
   this.stop();
-  const r=new SR();state.recognition=r;
-  r.continuous=continuous;r.interimResults=true;r.lang=navigator.language||"en-US";
-  r.onresult=e=>{
-   let interim="",final="";
-   for(let i=e.resultIndex;i<e.results.length;i++){
-    const res=e.results[i];if(res.isFinal)final+=res[0].transcript;else interim+=res[0].transcript;
+  const r = new SR();
+  state.recognition = r;
+  r.continuous = continuous;
+  r.interimResults = true;
+  r.lang = navigator.language || "en-US";
+
+  r.onresult = e => {
+   let interim = "", final = "";
+   for (let i = e.resultIndex; i < e.results.length; i++) {
+    const res = e.results[i];
+    if (res.isFinal) final += res[0].transcript;
+    else interim += res[0].transcript;
    }
-   if(interim){
-    $("prompt").value=interim;
-    if(state.prefs.autoBargeIn&&(state.speaking||state.generating)&&!SpeechEngine.isEcho(interim)&&interim.trim().split(/\s+/).length>=2)
-      BargeInController.interrupt();
+
+   const guardActive = SpeechEngine.isEchoGuardActive();
+
+   // While AI is speaking (or within the 1.2s echo cooldown):
+   if (guardActive) {
+    $("prompt").value = "";
+    const candidate = (final || interim).trim();
+    if (!candidate) return;
+
+    // Always allow explicit stop commands (e.g., "stop", "quiet")
+    if (BargeInController.isStopCommand(candidate)) {
+     BargeInController.interrupt();
+     UIRenderer.toast("Interrupted");
+     return;
+    }
+
+    // If autoBargeIn is OFF, or if the words match what the AI is saying, drop completely
+    if (!state.prefs.autoBargeIn || SpeechEngine.isEcho(candidate)) {
+     return;
+    }
+
+    // Only allow barge-in on a finalized non-echo phrase of 2+ words
+    if (final && candidate.split(/\s+/).length >= 2) {
+     BargeInController.interrupt();
+     SpeechEngine.queueTurn(candidate);
+    }
+    return;
    }
-   if(final){
-    const text=final.trim();$("prompt").value="";
-    if(!text)return;
-    if(BargeInController.isStopCommand(text)){BargeInController.interrupt();UIRenderer.toast("Interrupted");return}
-    if(SpeechEngine.isEcho(text)){UIRenderer.toast("Ignored possible microphone echo");return}
+
+   // Normal listening state (AI is silent)
+   if (interim) {
+    $("prompt").value = interim;
+    if (state.prefs.autoBargeIn && state.generating && !SpeechEngine.isEcho(interim) && interim.trim().split(/\s+/).length >= 2) {
+     BargeInController.interrupt();
+    }
+   }
+   if (final) {
+    const text = final.trim();
+    $("prompt").value = "";
+    if (!text) return;
+    if (BargeInController.isStopCommand(text)) {
+     BargeInController.interrupt();
+     UIRenderer.toast("Interrupted");
+     return;
+    }
+    if (SpeechEngine.isEcho(text)) {
+     UIRenderer.toast("Ignored possible microphone echo");
+     return;
+    }
     SpeechEngine.queueTurn(text);
    }
   };
-  r.onerror=e=>{if(e.error!=="no-speech")UIRenderer.toast("Mic error: "+e.error)};
-  r.onend=()=>{
-   if(state.continuous)setTimeout(()=>{try{r.start()}catch(e){}},150);
-   else{state.listening=false;UIRenderer.pill("");$("wave").classList.add("off")}
+
+  r.onerror = e => { if (e.error !== "no-speech") UIRenderer.toast("Mic error: " + e.error); };
+  r.onend = () => {
+   if (state.continuous) setTimeout(() => { try { r.start(); } catch (e) {} }, 150);
+   else { state.listening = false; UIRenderer.pill(""); $("wave").classList.add("off"); }
   };
-  try{r.start();state.listening=true;UIRenderer.pill(continuous?"Listening continuously":"Listening");$("wave").classList.remove("off");return true}
-  catch(e){UIRenderer.toast("Could not start microphone");return false}
+  try {
+   r.start();
+   state.listening = true;
+   UIRenderer.pill(continuous ? "Listening continuously" : "Listening");
+   $("wave").classList.remove("off");
+   return true;
+  } catch (e) {
+   UIRenderer.toast("Could not start microphone");
+   return false;
+  }
  },
- async startVosk(continuous){
-  if(typeof Vosk==="undefined"){
-   try{await new Promise((res,rej)=>{const s=document.createElement("script");s.src="./vosk.js";s.onload=res;s.onerror=rej;document.head.appendChild(s)})}
-   catch(e){UIRenderer.toast("Load local vosk.js beside index.html, then select a model .zip");return false}
+ async startVosk(continuous) {
+  if (typeof Vosk === "undefined") {
+   try {
+    await new Promise((res, rej) => {
+     const s = document.createElement("script");
+     s.src = "./vosk.js";
+     s.onload = res;
+     s.onerror = rej;
+     document.head.appendChild(s);
+    });
+   } catch (e) {
+    UIRenderer.toast("Load local vosk.js beside index.html, then select a model .zip");
+    return false;
+   }
   }
-  if(!state.voskModel){
-   UIRenderer.toast("Choose a local Vosk model .zip in Settings");return false;
+  if (!state.voskModel) {
+   UIRenderer.toast("Choose a local Vosk model .zip in Settings");
+   return false;
   }
-  try{
-   if(!state.vosk){
-    const model=await Vosk.createModel(state.voskModel);
-    state.vosk=model;state.audioContext=new (window.AudioContext||window.webkitAudioContext)();
-    const stream=await navigator.mediaDevices.getUserMedia({audio:true});
-    const source=state.audioContext.createMediaStreamSource(stream);
-    state.processor=state.audioContext.createScriptProcessor(4096,1,1);
-    state.voskRecognizer=new model.KaldiRecognizer(16000);
-    state.voskRecognizer.on("result",e=>{
-     const text=(e.result?.text||"").trim();if(!text)return;
-     if(BargeInController.isStopCommand(text)){BargeInController.interrupt();UIRenderer.toast("Interrupted");return}
-     if(SpeechEngine.isEcho(text)){UIRenderer.toast("Ignored possible microphone echo");return}
+  try {
+   if (!state.vosk) {
+    const model = await Vosk.createModel(state.voskModel);
+    state.vosk = model;
+    state.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const source = state.audioContext.createMediaStreamSource(stream);
+    state.processor = state.audioContext.createScriptProcessor(4096, 1, 1);
+    state.voskRecognizer = new model.KaldiRecognizer(16000);
+
+    state.voskRecognizer.on("result", e => {
+     const text = (e.result?.text || "").trim();
+     if (!text) return;
+     if (BargeInController.isStopCommand(text)) {
+      BargeInController.interrupt();
+      UIRenderer.toast("Interrupted");
+      return;
+     }
+     if (SpeechEngine.isEcho(text)) {
+      UIRenderer.toast("Ignored possible microphone echo");
+      return;
+     }
+     if (SpeechEngine.isEchoGuardActive() && !state.prefs.autoBargeIn) return;
      SpeechEngine.queueTurn(text);
     });
-    state.voskRecognizer.on("partialresult",e=>{
-     const t=e.result?.partial||"";$("prompt").value=t;
-     if(t&&state.prefs.autoBargeIn&&(state.speaking||state.generating))BargeInController.interrupt();
+
+    state.voskRecognizer.on("partialresult", e => {
+     const t = (e.result?.partial || "").trim();
+     if (SpeechEngine.isEchoGuardActive()) {
+      $("prompt").value = "";
+      if (t && BargeInController.isStopCommand(t)) {
+       BargeInController.interrupt();
+       UIRenderer.toast("Interrupted");
+      }
+      return;
+     }
+     $("prompt").value = t;
+     if (t && state.prefs.autoBargeIn && state.generating && !SpeechEngine.isEcho(t)) {
+      BargeInController.interrupt();
+     }
     });
-    state.processor.onaudioprocess=ev=>{try{state.voskRecognizer.acceptWaveform(ev.inputBuffer)}catch(e){}};
-    source.connect(state.processor);state.processor.connect(state.audioContext.destination);
+
+    // Gate raw audio frames sent to Vosk if echo guard is active and autoBargeIn is disabled
+    state.processor.onaudioprocess = ev => {
+     if (SpeechEngine.isEchoGuardActive() && !state.prefs.autoBargeIn) return;
+     try { state.voskRecognizer.acceptWaveform(ev.inputBuffer); } catch (e) {}
+    };
+    source.connect(state.processor);
+    state.processor.connect(state.audioContext.destination);
    }
-   state.listening=true;state.continuous=continuous;UIRenderer.pill(continuous?"Listening continuously":"Listening");$("wave").classList.remove("off");return true;
-  }catch(e){UIRenderer.toast("Vosk initialization failed");return false}
+   state.listening = true;
+   state.continuous = continuous;
+   UIRenderer.pill(continuous ? "Listening continuously" : "Listening");
+   $("wave").classList.remove("off");
+   return true;
+  } catch (e) {
+   UIRenderer.toast("Vosk initialization failed");
+   return false;
+  }
  },
  stop(){
   try{state.recognition?.stop()}catch(e){}
